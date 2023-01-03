@@ -64,8 +64,8 @@ export class SencilloDB {
       this.#db[collection] = { __stats: { inserted: 0, total: 0 } };
     }
 
-    if (index instanceof Function){
-        index = index(data)
+    if (index instanceof Function) {
+      index = index(data);
     }
 
     if (!this.#db[collection][index]) {
@@ -278,3 +278,11 @@ export class SencilloDB {
     return items;
   }
 }
+
+export const quickTx = (db) => {
+  return async (operation, instructions) => {
+    return db.transaction((tx) => {
+      return tx[operation](instructions);
+    });
+  };
+};

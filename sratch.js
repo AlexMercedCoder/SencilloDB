@@ -1,2 +1,5 @@
-const cheese = () => {}
-console.log(cheese instanceof Function)
+const hello = {
+    [true]: "cheese"
+}
+
+console.log(hello)

@@ -1,1 +1,9 @@
-{}
+{
+  "people": {
+    "24": [{ "name": "Alex Merced", "age": 24, "_id": 1 }],
+    "25": [{ "name": "Alex Merced 1", "age": 25, "_id": 2 }],
+    "26": [],
+    "27": [{ "name": "Alex Merced three", "age": 37, "_id": 4 }],
+    "__stats": { "inserted": 4, "total": 3 }
+  }
+}

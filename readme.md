@@ -8,7 +8,7 @@ SencilloDB is a small passion project to create a small compact but flexible obj
 For example this code:
 
 ```js
-import { SencilloDB } from "../index.js";
+import { SencilloDB } from "sencillodb";
 
 const db = new SencilloDB();
 
@@ -39,7 +39,7 @@ console.log(people);
 
 This code logs the following since we returned only the results of the initial create:
 
-```
+```js
 [
   { name: 'Alex Merced', age: 24, _id: 1 },
   { name: 'Alex Merced 1', age: 25, _id: 2 },
@@ -107,8 +107,38 @@ These are possible properties of the instructions argument
 
 - collect: collection to do operations in, defaults to "default". This is available in all operations.
 
-- index: index of collection to apply operations to, applies to all transactions, and for createMany can pass a function `(item) => indexValue` as index so each items index can be determined programmatically.
+- index: index of collection to apply operations to, applies to all transactions, and for create and createMany can pass a function `(item) => indexValue` as an index so each items index can be determined programmatically.
 
 - callback: a callback similar to what you'd use for the find and filter array methods `(item, index) => boolean` used for the find and findMany operations to determine what to find.
 
 - data: An object representing the data to create or update. When updating, the data is swapped so you want to include all existing properties along with changed ones.
+
+- sort: Only for findMany, it's a function similar to those used for `Array.sort`, it will be used to sort your results once they've been gathered. By default it will sort based on id. `(x, y) => x._id - y.id`
+
+## Quick Transactions
+
+While using the transaction method gives you many benefits:
+
+- batching multiple changes to your data
+- return only the data you need from the transaction
+
+There are times you just need to run one transaction and use it's return value without all the fuss. For that we have the `quickTx` function which will wrap a function around your database to more quickly execute one operation transactions.
+
+```js
+import { SencilloDB, quickTx } from "sencillodb";
+
+const db = new SencilloDB({ file: "./app2.json" });
+
+const qtx = quickTx(db)
+
+console.log(await qtx("createMany", {
+    data: [
+      { name: "Alex Merced", age: 24 },
+      { name: "Alex Merced 1", age: 25 },
+      { name: "Alex Merced 2", age: 26 },
+      { name: "Alex Merced 3", age: 27 },
+    ],
+    collection: "people",
+    index: (i) => i.age
+  }))
+```

@@ -18,9 +18,10 @@ const people = await db.transaction((tx) => {
     _id: 4,
     data: { name: "Alex Merced three", age: 37 },
     collection: "people",
+    index: 27
   });
 
-  tx.destroy({ _id: 3, collection: "people" });
+  tx.destroy({ _id: 3, collection: "people" , index: 26});
 
   const people = tx.findMany({
       callback: (i) => {
