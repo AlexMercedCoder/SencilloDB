@@ -35,7 +35,7 @@ export interface Instructions {
 
 export type TxFunction = (
   instructions: Instructions
-) => DataObj | DataCollection;
+) => DataObj | DataCollection | void;
 export interface Transactor {
   create: TxFunction;
   createMany: TxFunction;
@@ -43,6 +43,8 @@ export interface Transactor {
   findMany: TxFunction;
   update: TxFunction;
   destroy: TxFunction;
+  dropCollection: TxFunction;
+  dropIndex: TxFunction;
 }
 
 export type TxCallback = (tx: Transactor) => any;
@@ -60,11 +62,13 @@ export declare class SencilloDB {
   findMany(instructions: Instructions): DataObj | DataCollection;
   update(instructions: Instructions): DataObj | DataCollection;
   destroy(instructions: Instructions): DataObj | DataCollection;
+  dropCollection(instructions: Instructions): void;
+  dropIndex(instructions: Instructions): void;
 }
 
 export type QuickTxFunction = (
   operation: string,
   instructions: Instructions
-) => DataObj | DataCollection;
+) => DataObj | DataCollection|void;
 
 export declare function quickTx(db: SencilloDB): QuickTxFunction;

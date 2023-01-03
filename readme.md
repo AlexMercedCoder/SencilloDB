@@ -1,4 +1,5 @@
 ## SencilloDB
+
 #### created by Alex Merced of AlexMercedCoder.dev
 
 _Sencillo is spanish for Simple_
@@ -41,11 +42,11 @@ This code logs the following since we returned only the results of the initial c
 
 ```js
 [
-  { name: 'Alex Merced', age: 24, _id: 1 },
-  { name: 'Alex Merced 1', age: 25, _id: 2 },
-  { name: 'Alex Merced 2', age: 26, _id: 3 },
-  { name: 'Alex Merced 3', age: 27, _id: 4 }
-]
+  { name: "Alex Merced", age: 24, _id: 1 },
+  { name: "Alex Merced 1", age: 25, _id: 2 },
+  { name: "Alex Merced 2", age: 26, _id: 3 },
+  { name: "Alex Merced 3", age: 27, _id: 4 },
+];
 ```
 
 create the following JSON in a json file (this has been prettified) which represents the state of the data at the end of the most recent transaction.
@@ -80,7 +81,7 @@ Whatever this callback returns is what the transaction returns, so you can only 
 By defaults it saves the data in a file called sencillo.json but if you want to save it elsewhere just pass it a file location.
 
 ```js
-const db = new SencilloDB({file: "./app.json"})
+const db = new SencilloDB({ file: "./app.json" });
 ```
 
 ## Transaction Methods
@@ -99,11 +100,15 @@ Here are the tx methods, each one takes an object as an argument referred to as 
 
 - tx.createMany(instructions): takes an array of objects to insert. An index can specified explicitly or a functions to dynamically determine the index for each item can be provided. Returns array of all created items.
 
+- tx.dropCollection(instructions): removes the specified collection, all data in that collection is now gone.
+
+- tx.dropIndex(instructions): removes the specified index in the specified collection. All data in that index is now gone.
+
 ## Instructions Argument
 
 These are possible properties of the instructions argument
 
-- _id: _id of the document in the collection you want to operate on using in ["update", "delete"]
+- \_id: \_id of the document in the collection you want to operate on using in ["update", "delete"]
 
 - collect: collection to do operations in, defaults to "default". This is available in all operations.
 
@@ -129,9 +134,10 @@ import { SencilloDB, quickTx } from "sencillodb";
 
 const db = new SencilloDB({ file: "./app2.json" });
 
-const qtx = quickTx(db)
+const qtx = quickTx(db);
 
-console.log(await qtx("createMany", {
+console.log(
+  await qtx("createMany", {
     data: [
       { name: "Alex Merced", age: 24 },
       { name: "Alex Merced 1", age: 25 },
@@ -139,6 +145,7 @@ console.log(await qtx("createMany", {
       { name: "Alex Merced 3", age: 27 },
     ],
     collection: "people",
-    index: (i) => i.age
-  }))
+    index: (i) => i.age,
+  })
+);
 ```

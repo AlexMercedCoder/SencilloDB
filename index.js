@@ -41,6 +41,8 @@ export class SencilloDB {
       find: this.find.bind(self),
       findMany: this.findMany.bind(self),
       createMany: this.createMany.bind(self),
+      dropCollection: this.dropCollection.bind(self),
+      dropIndex: this.dropIndex.bind.call(self)
     };
 
     const payload = callback(tx);
@@ -276,6 +278,20 @@ export class SencilloDB {
     }
 
     return items;
+  }
+
+  dropCollection(instructions) {
+    const { collection } = instructions;
+
+    this.#db[collection] = undefined;
+  }
+
+  dropIndex(instructions) {
+    const { collection, index } = instructions;
+
+    if (this.#db[collection] && this.#db[collection][index]) {
+      this.#db[collection][index] = undefined;
+    }
   }
 }
 
