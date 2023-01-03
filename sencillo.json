@@ -1,0 +1,10 @@
+{
+  "people": {
+    "__stats": { "inserted": 4, "total": 3 },
+    "default": [
+      { "name": "Alex Merced", "age": 24, "_id": 1 },
+      { "name": "Alex Merced 1", "age": 25, "_id": 2 },
+      { "name": "Alex Merced three", "age": 37, "_id": 4 }
+    ]
+  }
+}

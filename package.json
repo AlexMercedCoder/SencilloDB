@@ -1,0 +1,22 @@
+{
+  "name": "sencillodb",
+  "version": "0.0.1ub ",
+  "description": "JSON file based data store",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "type": "module",
+  "types":"./types/types.d.ts",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AlexMercedCoder/SencilloDB.git"
+  },
+  "keywords": [],
+  "author": "Alex Merced",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/AlexMercedCoder/SencilloDB/issues"
+  },
+  "homepage": "https://github.com/AlexMercedCoder/SencilloDB#readme"
+}
