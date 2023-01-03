@@ -51,7 +51,7 @@ export class SencilloDB {
   }
 
   create(instructions) {
-    const {
+    let {
       collection = "default",
       index = "default",
       data = false,
@@ -62,6 +62,10 @@ export class SencilloDB {
 
     if (!this.#db[collection]) {
       this.#db[collection] = { __stats: { inserted: 0, total: 0 } };
+    }
+
+    if (index instanceof Function){
+        index = index(data)
     }
 
     if (!this.#db[collection][index]) {

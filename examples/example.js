@@ -11,6 +11,7 @@ const people = await db.transaction((tx) => {
       { name: "Alex Merced 3", age: 27 },
     ],
     collection: "people",
+    index: (i) => i.age
   });
 
   tx.update({
