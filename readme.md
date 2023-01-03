@@ -104,6 +104,8 @@ Here are the tx methods, each one takes an object as an argument referred to as 
 
 - tx.dropIndex(instructions): removes the specified index in the specified collection. All data in that index is now gone.
 
+- tx.rewriteCollection: rewrites all existing data in specified location, it will first sort them using the sort function and then readd all the data indexed based on the index function if there is one.
+
 ## Instructions Argument
 
 These are possible properties of the instructions argument
@@ -149,3 +151,38 @@ console.log(
   })
 );
 ```
+
+#### Resource Manager (Enforcing Schemas)
+
+If you want to enforce a schema you can do so with the Resource Manager. This will take a schema and return an object with an Execute function that works like the qtx function returned by quickTransaction.
+
+```js
+import { SencilloDB, quickTx, createResourceManager } from "../index.js";
+
+const db = new SencilloDB({ file: "./app3.json" });
+
+const Friends = createResourceManager({
+  schema: [
+    ["age", Number],
+    ["name", String],
+    ["favorites", Array],
+  ],
+  db,
+  collection: "friends",
+  index: (obj) => obj.age,
+});
+
+Friends.execute("createMany", {
+  data: [{ name: "Alex", age: 37, favorites: ["cheese"] }],
+});
+```
+
+The example above shows how this would work, a few notes:
+
+- A schema is an array of 2 item arrays, first item being a string representing the property name and the second being the type constructor function. The schema will be used to validate data submitted when using the execute function of the returned object.
+
+- Validation only validates that all the properties of the schema are present and the right type. It will not remove extra properties that may be in the supplied data objects.
+
+- The schema is not tracked in the data store, validation is only occuring when inserting or updating data before the in-memory operations which occurs before the write to the json file.
+
+- For the `resourceManager.execute` function you can pass it full instructions for any operation. The collection you specified when creating the resource manager will always be passed in so no need to specify it when using `execute`. The index function you specify on creation of the resource manager will always be used for rewriteCollection, create and createMany operations so data will be indexed consistently without always having to pass in the function. So for rewriteCollection you can essentially pass an empty instructions to clean up the indexing of your data (data values may changes so what index individual data belongs to may changes so you'll want to do a rewrite)

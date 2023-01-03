@@ -1,5 +1,1 @@
-const hello = {
-    [true]: "cheese"
-}
-
-console.log(hello)
+console.log(`${Date.toString()}`)

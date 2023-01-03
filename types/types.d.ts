@@ -45,6 +45,7 @@ export interface Transactor {
   destroy: TxFunction;
   dropCollection: TxFunction;
   dropIndex: TxFunction;
+  rewriteCollection: TxFunction;
 }
 
 export type TxCallback = (tx: Transactor) => any;
@@ -64,11 +65,32 @@ export declare class SencilloDB {
   destroy(instructions: Instructions): DataObj | DataCollection;
   dropCollection(instructions: Instructions): void;
   dropIndex(instructions: Instructions): void;
+  rewriteCollection(instructions: Instructions): void;
 }
 
 export type QuickTxFunction = (
   operation: string,
   instructions: Instructions
-) => DataObj | DataCollection|void;
+) => DataObj | DataCollection | void;
 
 export declare function quickTx(db: SencilloDB): QuickTxFunction;
+
+export interface ResourceManager {
+  validate: (DataObj) => boolean;
+  execute: QuickTxFunction;
+}
+
+export type SchemaItem = [string, Function];
+
+export type Schema = Array<SchemaItem>;
+
+export interface ResourceManagerConfig {
+  db: SencilloDB;
+  index: IndexGenerator;
+  schema: Schema;
+  collection: string;
+}
+
+export declare function createResourceManager(
+  config: ResourceManagerConfig
+): ResourceManager;

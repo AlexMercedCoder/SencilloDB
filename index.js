@@ -42,7 +42,8 @@ export class SencilloDB {
       findMany: this.findMany.bind(self),
       createMany: this.createMany.bind(self),
       dropCollection: this.dropCollection.bind(self),
-      dropIndex: this.dropIndex.bind.call(self)
+      dropIndex: this.dropIndex.bind(self),
+      rewriteCollection: this.rewriteCollection.bind(self),
     };
 
     const payload = callback(tx);
@@ -293,6 +294,47 @@ export class SencilloDB {
       this.#db[collection][index] = undefined;
     }
   }
+
+  rewriteCollection(instructions) {
+    const {
+      collection = undefined,
+      index = "default",
+      sort = (x, y) => x._id - y._id,
+    } = instructions;
+
+    if (!collection) {
+      throw "No Collection Specified";
+    }
+
+    if (!this.#db[collection]) {
+      throw "collection doesn't exist";
+    }
+
+    const keys = Object.keys(this.#db[collection]);
+    const coll = this.#db[collection];
+
+    const data = [];
+
+    // get all data in one array
+    for (let key of keys) {
+      if (coll[key] instanceof Array) {
+        data.push(...coll[key]);
+      }
+    }
+
+    //sort the data
+    data.sort(sort);
+
+    // drop collection
+    this.#db[collection] = undefined;
+
+    // rewrite all data
+    this.createMany({
+      data,
+      index,
+      collection,
+    });
+  }
 }
 
 export const quickTx = (db) => {
@@ -300,5 +342,59 @@ export const quickTx = (db) => {
     return db.transaction((tx) => {
       return tx[operation](instructions);
     });
+  };
+};
+
+export const createResourceManager = (config) => {
+  let {
+    schema = [],
+    db = undefined,
+    index = () => "default",
+    collection = "default",
+  } = config;
+
+  const qtx = quickTx(db);
+
+  return {
+    validate: (obj) => {
+      const keys = Object.keys(obj);
+
+      for (let property of schema) {
+        if (!keys.includes(property[0])) {
+          throw `${property[0]} missing in some of the data presented`;
+        }
+
+        console.log(obj[property[0]].constructor === property[1]);
+        if (!obj[property[0]].constructor === property[1]) {
+          throw `${property[0]} is not of type ${property[1]}`;
+        }
+      }
+
+      return true;
+    },
+    execute(operation, instructions) {
+      if (["create", "createMany", "update"].includes(operation)) {
+        if (instructions.data instanceof Array) {
+          for (let i of instructions.data) {
+            this.validate(i);
+          }
+        } else {
+          if (typeof instructions.data !== "object") {
+            throw "data is not object or array";
+          }
+          this.validate(i);
+        }
+      }
+
+      let indexToUse = index;
+
+      if (["delete", "update", "find", "findMany", "dropIndex"]) {
+        if (!instructions.index) {
+          index = undefined;
+        }
+      }
+
+      return qtx(operation, { index: indexToUse, collection, ...instructions });
+    },
   };
 };
