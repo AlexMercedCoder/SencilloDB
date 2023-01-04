@@ -19,7 +19,14 @@ export class SencilloDB {
 
   async #loadDB() {
     const jsonString = await readFile(this.#file);
-    this.#db = JSON.parse(jsonString);
+
+    console.log("-", jsonString);
+
+    try {
+      this.#db = JSON.parse(jsonString);
+    } catch (error) {
+      throw "****file exists and doesn't contain valid json, fix the json or delete the file to create a new one****";
+    }
   }
 
   async #saveDB() {
@@ -91,13 +98,14 @@ export class SencilloDB {
   }
 
   update(instructions) {
-    const {
+    let {
       _id = undefined,
       collection = "default",
       index = "default",
       data = false,
     } = instructions;
 
+    let new_index = undefined;
     if (!_id) {
       throw "no _id to update";
     }
@@ -110,12 +118,17 @@ export class SencilloDB {
       throw "collection doesn't exist";
     }
 
-    if (!this.#db[collection][index]) {
-      throw "index doesn't exist";
-    }
-
     if (typeof data != "object") {
       throw "data is not an object";
+    }
+
+    if (index?.current && index?.new) {
+      new_index = index.new;
+      index = index.current;
+    }
+
+    if (!this.#db[collection][index]) {
+      throw "index doesn't exist";
     }
 
     const itemIndex = this.#db[collection][index].findIndex(
@@ -127,7 +140,21 @@ export class SencilloDB {
       _id: this.#db[collection][index][itemIndex]._id,
     };
 
-    this.#db[collection][index][itemIndex] = newItem;
+    this.#db[collection][index].splice(itemIndex, 1);
+
+    if (new_index) {
+      index = new_index;
+
+      if (new_index instanceof Function) {
+        index = new_index(newItem);
+      }
+
+      if (!this.#db[collection][index]) {
+        this.#db[collection][index] = [];
+      }
+    }
+
+    this.#db[collection][index].push(newItem);
 
     return newItem;
   }

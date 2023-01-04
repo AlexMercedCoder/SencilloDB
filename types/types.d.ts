@@ -12,6 +12,11 @@ export type Indexable = number | string | boolean;
 
 export type IndexGenerator = (DataObj) => Indexable;
 
+export interface IndexSwapInstructions {
+  current: string;
+  new: string | IndexGenerator;
+}
+
 export interface SencilloConstructorArgs {
   file?: string;
 }
@@ -26,7 +31,7 @@ export type SortFunction = (x: DataObj, y: DataObj) => number;
 
 export interface Instructions {
   data?: DataObj | Array<DataObj>;
-  index?: Indexable | IndexGenerator;
+  index?: Indexable | IndexGenerator | IndexSwapInstructions;
   collection?: string;
   _id?: number;
   callback?: FindCallback;

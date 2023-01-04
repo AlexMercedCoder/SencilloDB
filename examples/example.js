@@ -18,7 +18,10 @@ const people = await db.transaction((tx) => {
     _id: 4,
     data: { name: "Alex Merced three", age: 37 },
     collection: "people",
-    index: 27
+    index: {
+      current: 27,
+      new: (i) => i.age
+    }
   });
 
   tx.destroy({ _id: 3, collection: "people" , index: 26});

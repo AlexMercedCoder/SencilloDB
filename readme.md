@@ -114,7 +114,21 @@ These are possible properties of the instructions argument
 
 - collect: collection to do operations in, defaults to "default". This is available in all operations.
 
-- index: index of collection to apply operations to, applies to all transactions, and for create and createMany can pass a function `(item) => indexValue` as an index so each items index can be determined programmatically.
+- index: index of collection to apply operations to, applies to all transactions, and for create and createMany can pass a function `(item) => indexValue` as an index so each items index can be determined programmatically. If you are doing an update an want to swap the document to a different index you can pass an object of this shape as the index property `{current: "currentIndex", new: "newIndex"}` and it remove the document from the old index and add it to the new index. (Useful if you are changing the value that you base your indexing on).
+
+*For example, maybe I have indexed my document based on the first letter of a name property but am now changing the name property of the document from Bob to Steve. On the update I can pass `{current: "B", new: "S"}` this way the indexing will still stay consistent with the document it holds. You can also pass an index function for `new` to dynamically generate the new index.
+
+```js
+  tx.update({
+    _id: 4,
+    data: { name: "Alex Merced three", age: 37 },
+    collection: "people",
+    index: {
+      current: 27,
+      new: (i) => i.age
+    }
+  });
+```
 
 - callback: a callback similar to what you'd use for the find and filter array methods `(item, index) => boolean` used for the find and findMany operations to determine what to find.
 
