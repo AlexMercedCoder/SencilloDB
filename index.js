@@ -20,8 +20,6 @@ export class SencilloDB {
   async #loadDB() {
     const jsonString = await readFile(this.#file);
 
-    console.log("-", jsonString);
-
     try {
       this.#db = JSON.parse(jsonString);
     } catch (error) {
@@ -52,12 +50,17 @@ export class SencilloDB {
       dropIndex: this.dropIndex.bind(self),
       rewriteCollection: this.rewriteCollection.bind(self),
     };
+    try {
+      const payload = callback(tx);
 
-    const payload = callback(tx);
+      await this.#saveDB();
 
-    await this.#saveDB();
-
-    return payload;
+      return payload;
+    } catch (error) {
+      console.log(error);
+      this.#loadDB();
+      return undefined;
+    }
   }
 
   create(instructions) {
@@ -67,7 +70,7 @@ export class SencilloDB {
       data = false,
     } = instructions;
     if (!data) {
-      throw "no data given";
+      throw "CREATE ERROR:no data given";
     }
 
     if (!this.#db[collection]) {
@@ -83,7 +86,7 @@ export class SencilloDB {
     }
 
     if (typeof data != "object") {
-      throw "data is not an object";
+      throw "CREATE ERROR:data is not an object";
     }
 
     const _id = ++this.#db[collection].__stats.inserted;
@@ -107,19 +110,19 @@ export class SencilloDB {
 
     let new_index = undefined;
     if (!_id) {
-      throw "no _id to update";
+      throw "UPDATE ERROR:no _id to update";
     }
 
     if (!data) {
-      throw "no data given";
+      throw "UPDATE ERROR:no data given";
     }
 
     if (!this.#db[collection]) {
-      throw "collection doesn't exist";
+      throw "UPDATE ERROR:collection doesn't exist";
     }
 
     if (typeof data != "object") {
-      throw "data is not an object";
+      throw "UPDATE ERROR:data is not an object";
     }
 
     if (index?.current && index?.new) {
@@ -128,7 +131,7 @@ export class SencilloDB {
     }
 
     if (!this.#db[collection][index]) {
-      throw "index doesn't exist";
+      throw "UPDATE ERROR:index doesn't exist";
     }
 
     const itemIndex = this.#db[collection][index].findIndex(
@@ -167,15 +170,15 @@ export class SencilloDB {
     } = instructions;
 
     if (!_id) {
-      throw "no _id to update";
+      throw "DESTROY ERROR: no _id to update";
     }
 
     if (!this.#db[collection]) {
-      throw "collection doesn't exist";
+      throw "DESTROY ERROR: collection doesn't exist";
     }
 
     if (!this.#db[collection][index]) {
-      throw "index doesn't exist";
+      throw "DESTROY ERROR: index doesn't exist";
     }
 
     const itemIndex = this.#db[collection][index].findIndex(
@@ -195,16 +198,16 @@ export class SencilloDB {
     } = instructions;
 
     if (!callback) {
-      throw "no callback property of (item) => boolean";
+      throw "FIND ERROR: no callback property of (item) => boolean";
     }
 
     if (!this.#db[collection]) {
-      throw "collection doesn't exist";
+      throw "FIND ERROR: collection doesn't exist";
     }
 
     if (index) {
       if (!this.#db[collection][index]) {
-        throw "index doesn't exist";
+        throw "FIND ERROR: index doesn't exist";
       }
 
       return this.#db[collection][index].find(callback);
@@ -238,16 +241,16 @@ export class SencilloDB {
     } = instructions;
 
     if (!callback) {
-      throw "no callback property of (item) => boolean";
+      throw "FINDMANY ERROR: no callback property of (item) => boolean";
     }
 
     if (!this.#db[collection]) {
-      throw "collection doesn't exist";
+      throw "FINDMANY ERROR: collection doesn't exist";
     }
 
     if (index) {
       if (!this.#db[collection][index]) {
-        throw "index doesn't exist";
+        throw "FINDMANY ERROR: index doesn't exist";
       }
 
       return this.#db[collection][index].filter(callback);
@@ -278,11 +281,11 @@ export class SencilloDB {
     const { data, index = "default", collection = "default" } = instructions;
 
     if (data instanceof Array === false) {
-      throw "data must be an array of objects";
+      throw "CREATEMANY ERROR: data must be an array of objects";
     }
 
     if (!data.every((item) => typeof data === "object")) {
-      throw "all items in array must be objects";
+      throw "CREATEMANY ERROR: all items in array must be objects";
     }
 
     const items = [];
@@ -330,11 +333,11 @@ export class SencilloDB {
     } = instructions;
 
     if (!collection) {
-      throw "No Collection Specified";
+      throw "rewriteCollection Error: No Collection Specified";
     }
 
     if (!this.#db[collection]) {
-      throw "collection doesn't exist";
+      throw "rewriteCollection Error: collection doesn't exist";
     }
 
     const keys = Object.keys(this.#db[collection]);
@@ -388,12 +391,12 @@ export const createResourceManager = (config) => {
 
       for (let property of schema) {
         if (!keys.includes(property[0])) {
-          throw `${property[0]} missing in some of the data presented`;
+          throw `RESOURE VALIDATION ERROR: ${property[0]} missing in some of the data presented`;
         }
 
         console.log(obj[property[0]].constructor === property[1]);
         if (!obj[property[0]].constructor === property[1]) {
-          throw `${property[0]} is not of type ${property[1]}`;
+          throw `RESOURE VALIDATION ERROR: ${property[0]} is not of type ${property[1]}`;
         }
       }
 
@@ -407,7 +410,7 @@ export const createResourceManager = (config) => {
           }
         } else {
           if (typeof instructions.data !== "object") {
-            throw "data is not object or array";
+            throw "EXECUTE ERROR: data is not object or array";
           }
           this.validate(i);
         }

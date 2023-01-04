@@ -1,6 +1,6 @@
 {
   "name": "sencillodb",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "JSON file based data store",
   "main": "index.js",
   "scripts": {
