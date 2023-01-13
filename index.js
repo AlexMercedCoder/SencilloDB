@@ -4,6 +4,8 @@ import { readFile, writeFile } from "fs/promises";
 export class SencilloDB {
   #file;
   #db;
+  #loadHook;
+  #saveHook;
 
   constructor(config = { file: "./sencillo.json" }) {
     if (!config.file) {
@@ -15,10 +17,14 @@ export class SencilloDB {
     }
 
     this.#file = config.file;
+    this.#loadHook = config.loadHook ? config.loadHook : undefined;
+    this.#saveHook = config.saveHook ? config.saveHook : undefined;
   }
 
   async #loadDB() {
-    const jsonString = await readFile(this.#file);
+    const jsonString = this.#loadHook
+      ? await this.#loadHook()
+      : await readFile(this.#file);
 
     try {
       this.#db = JSON.parse(jsonString);
@@ -29,7 +35,9 @@ export class SencilloDB {
 
   async #saveDB() {
     const jsonString = JSON.stringify(this.#db);
-    await writeFile(this.#file, jsonString);
+    this.#saveHook
+      ? await this.#saveHook(jsonString)
+      : await writeFile(this.#file, jsonString);
   }
 
   async transaction(callback) {
@@ -137,6 +145,10 @@ export class SencilloDB {
     const itemIndex = this.#db[collection][index].findIndex(
       (item) => item._id === _id
     );
+
+    if (itemIndex == -1) {
+      throw `UPDATE ERROR: Specified _id ${_id} doesn't exist in specified index ${index} to update`;
+    }
 
     const newItem = {
       ...data,

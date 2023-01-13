@@ -17,8 +17,13 @@ export interface IndexSwapInstructions {
   new: string | IndexGenerator;
 }
 
+export type loadHook = () => string;
+export type saveHook = (jsonString: string) => void;
+
 export interface SencilloConstructorArgs {
   file?: string;
+  loadHook?: loadHook;
+  saveHook?: saveHook;
 }
 
 export type FindCallback = (
@@ -59,6 +64,8 @@ export declare class SencilloDB {
   constructor(config: SencilloConstructorArgs);
   #file: string;
   #db: JSONDB;
+  #loadHook: loadHook;
+  #saveHook: saveHook;
   #saveDB(): void;
   #loadDB(): void;
   transaction(tx: Transactor): any;

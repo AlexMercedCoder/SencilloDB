@@ -83,6 +83,11 @@ By defaults it saves the data in a file called sencillo.json but if you want to 
 ```js
 const db = new SencilloDB({ file: "./app.json" });
 ```
+All properties are optional:
+
+- file (`default: "./sencillo.json"`): file to save JSON data too
+- loadHook: If you want to load data from somewhere else such as JSON saved in a database or elsewhere you can pass an async function that returns a json string to initially load the db. (This will be lieu of loading a file by the specified filename)
+- saveHook: If instead of saving the data in a file you want it saved elsewhere, you can pass an async function that receives the json string as an argument so you can save it in another database or elsewhere. (this will be lieu of saving it to the specified file)
 
 ## Transaction Methods
 
