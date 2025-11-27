@@ -4,10 +4,10 @@
   "description": "JSON file based data store",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js"
   },
   "type": "module",
-  "types":"./types/types.d.ts",
+  "types": "./types/types.d.ts",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/AlexMercedCoder/SencilloDB.git"
@@ -18,5 +18,8 @@
   "bugs": {
     "url": "https://github.com/AlexMercedCoder/SencilloDB/issues"
   },
-  "homepage": "https://github.com/AlexMercedCoder/SencilloDB#readme"
+  "homepage": "https://github.com/AlexMercedCoder/SencilloDB#readme",
+  "devDependencies": {
+    "jest": "^30.2.0"
+  }
 }

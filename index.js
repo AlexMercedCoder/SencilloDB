@@ -424,7 +424,7 @@ export const createResourceManager = (config) => {
           if (typeof instructions.data !== "object") {
             throw "EXECUTE ERROR: data is not object or array";
           }
-          this.validate(i);
+          this.validate(instructions.data);
         }
       }
 

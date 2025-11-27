@@ -6,6 +6,13 @@ _Sencillo is spanish for Simple_
 
 SencilloDB is a small passion project to create a small compact but flexible object store using JSON files.
 
+## Documentation
+
+- [Getting Started](./documentation/getting-started.md)
+- [Core Concepts](./documentation/core-concepts.md)
+- [API Reference](./documentation/api-reference.md)
+- [Advanced Usage](./documentation/advanced-usage.md)
+
 For example this code:
 
 ```js
