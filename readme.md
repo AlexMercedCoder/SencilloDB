@@ -13,6 +13,10 @@ SencilloDB is a small passion project to create a small compact but flexible obj
 - [API Reference](./documentation/api-reference.md)
 - [Querying Data](./documentation/querying.md)
 - [Advanced Usage](./documentation/advanced-usage.md)
+- [Stream Processing](./documentation/stream-processing.md)
+- [Compression](./documentation/compression.md)
+- [Sharding](./documentation/sharding.md)
+- [LRU Cache](./documentation/lru_cache.md)
 
 For example this code:
 
@@ -21,8 +25,8 @@ import { SencilloDB } from "sencillodb";
 
 const db = new SencilloDB();
 
-const people = await db.transaction((tx) => {
-  const people = tx.createMany({
+const people = await db.transaction(async (tx) => {
+  const people = await tx.createMany({
     data: [
       { name: "Alex Merced", age: 24 },
       { name: "Alex Merced 1", age: 25 },
@@ -32,13 +36,13 @@ const people = await db.transaction((tx) => {
     collection: "people",
   });
 
-  tx.update({
+  await tx.update({
     _id: 4,
     data: { name: "Alex Merced three", age: 37 },
     collection: "people",
   });
 
-  tx.destroy({ _id: 3, collection: "people" });
+  await tx.destroy({ _id: 3, collection: "people" });
 
   return people;
 });
@@ -91,13 +95,16 @@ By defaults it saves the data in a file called sencillo.json but if you want to 
 ```js
 const db = new SencilloDB({ 
   file: "./data.json",
+  // OR
+  folder: "./data_folder", // For separate files per collection (Lazy Loading)
   aof: true // Enable Append-Only File persistence for faster writes
 });
 ```
 
 ## Features
 - **In-Memory Speed**: Operations are performed in memory.
-- **Persistence**: Data is saved to a JSON file.
+- **Persistence**: Data is saved to a JSON file or folder of files.
+- **Lazy Loading**: (Folder Mode) Loads collections on demand for better performance with large datasets.
 - **AOF Mode**: Optional append-only logging for high write throughput.
 - **ACID Transactions**: Serialized transactions with atomic file writes.
 - **Secondary Indexing**: O(1) lookups on indexed fields.
@@ -108,12 +115,13 @@ const db = new SencilloDB({
 All properties are optional:
 
 - file (`default: "./sencillo.json"`): file to save JSON data too
+- folder: folder to save JSON files to (one per collection)
 - loadHook: If you want to load data from somewhere else such as JSON saved in a database or elsewhere you can pass an async function that returns a json string to initially load the db. (This will be lieu of loading a file by the specified filename)
 - saveHook: If instead of saving the data in a file you want it saved elsewhere, you can pass an async function that receives the json string as an argument so you can save it in another database or elsewhere. (this will be lieu of saving it to the specified file)
 
 ## Transaction Methods
 
-Here are the tx methods, each one takes an object as an argument referred to as instructions which we will detail later.
+Here are the tx methods, each one takes an object as an argument referred to as instructions which we will detail later. All methods are asynchronous and return a Promise.
 
 - tx.create(instructions): create one document in the specified collection and index and returns it.
 
@@ -146,7 +154,7 @@ These are possible properties of the instructions argument
 *For example, maybe I have indexed my document based on the first letter of a name property but am now changing the name property of the document from Bob to Steve. On the update I can pass `{current: "B", new: "S"}` this way the indexing will still stay consistent with the document it holds. You can also pass an index function for `new` to dynamically generate the new index.
 
 ```js
-  tx.update({
+  await tx.update({
     _id: 4,
     data: { name: "Alex Merced three", age: 37 },
     collection: "people",
@@ -213,7 +221,7 @@ const Friends = createResourceManager({
   index: (obj) => obj.age,
 });
 
-Friends.execute("createMany", {
+await Friends.execute("createMany", {
   data: [{ name: "Alex", age: 37, favorites: ["cheese"] }],
 });
 ```

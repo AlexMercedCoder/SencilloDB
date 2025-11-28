@@ -53,14 +53,32 @@ const db = new SencilloDB({
 });
 
 // Writes are fast (appended to data.json.aof)
-await db.transaction(tx => {
-  tx.create({ collection: "logs", data: { msg: "Hello" } });
+await db.transaction(async tx => {
+  await tx.create({ collection: "logs", data: { msg: "Hello" } });
 });
 
 // Periodically compact the log
 setInterval(async () => {
   await db.compact();
 }, 60000); // Every minute
+```
+
+## Collection-Level Persistence (Lazy Loading)
+
+For handling larger datasets, use the `folder` option. This stores each collection in its own file and loads them on demand.
+
+```javascript
+const db = new SencilloDB({ 
+  folder: "./my_db_folder" 
+});
+
+// Collections are loaded only when accessed
+await db.transaction(async tx => {
+  // Loads 'users.json' (if exists), modifies it, and saves it back.
+  await tx.create({ collection: "users", data: { name: "Dave" } });
+  
+  // 'products.json' is NOT loaded or touched.
+});
 ```
 
 ## Custom Storage Hooks

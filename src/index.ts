@@ -1,6 +1,9 @@
-
-import { existsSync, writeFileSync } from "fs";
-import { readFile, writeFile, rename, appendFile, unlink } from "fs/promises";
+import { existsSync, writeFileSync, mkdirSync, createReadStream, createWriteStream } from "fs";
+import { readFile, rename, appendFile, unlink, mkdir, readdir } from "fs/promises";
+import { join } from "path";
+// @ts-ignore
+import bfj from "bfj";
+import zlib from "zlib";
 import { Mutex } from "./utils.js";
 import { match } from "./query.js";
 import {
@@ -14,9 +17,13 @@ import {
 
 export interface SencilloConfig {
   file?: string;
+  folder?: string;
   loadHook?: () => Promise<string>;
   saveHook?: (json: string) => Promise<void>;
   aof?: boolean;
+  compression?: boolean;
+  sharding?: boolean;
+  maxCacheSize?: number;
 }
 
 export interface Populate {
@@ -37,16 +44,16 @@ export interface Instructions {
 }
 
 export interface Transaction {
-  create: (instructions: Instructions) => any;
-  update: (instructions: Instructions) => any;
-  destroy: (instructions: Instructions) => any;
-  find: (instructions: Instructions) => any;
-  findMany: (instructions: Instructions) => any[];
-  createMany: (instructions: Instructions) => any[];
-  dropCollection: (instructions: Instructions) => void;
-  dropIndex: (instructions: Instructions) => void;
-  rewriteCollection: (instructions: Instructions) => void;
-  ensureIndex: (instructions: { collection: string; field: string }) => void;
+  create: (instructions: Instructions) => Promise<any>;
+  update: (instructions: Instructions) => Promise<any>;
+  destroy: (instructions: Instructions) => Promise<any>;
+  find: (instructions: Instructions) => Promise<any>;
+  findMany: (instructions: Instructions) => Promise<any[]>;
+  createMany: (instructions: Instructions) => Promise<any[]>;
+  dropCollection: (instructions: Instructions) => Promise<void>;
+  dropIndex: (instructions: Instructions) => Promise<void>;
+  rewriteCollection: (instructions: Instructions) => Promise<void>;
+  ensureIndex: (instructions: { collection: string; field: string }) => Promise<void>;
 }
 
 export interface CollectionStats {
@@ -66,43 +73,76 @@ interface Database {
 }
 
 export class SencilloDB {
-  #file: string;
+  #file: string | undefined;
+  #folder: string | undefined;
   #aofFile: string;
   #db: Database | undefined;
   #loadHook: (() => Promise<string>) | undefined;
   #saveHook: ((json: string) => Promise<void>) | undefined;
   #mutex = new Mutex();
   #aof: boolean;
+  #compression: boolean;
+  #sharding: boolean;
+  #maxCacheSize: number;
+  #lru: Map<string, number> = new Map(); // Key -> Timestamp (or just insertion order)
   #pendingOperations: { op: string; instructions: any }[] = [];
+  #dirtyCollections: Set<string> = new Set();
 
   constructor(config: SencilloConfig = { file: "./sencillo.json" }) {
-    if (!config.file && !config.loadHook && !config.saveHook) {
-      // Allow if hooks are provided, otherwise file is required (default provided in arg)
-      // But logic below checks config.file
+    if (!config.file && !config.folder && !config.loadHook && !config.saveHook) {
+      // Allow if hooks are provided, otherwise file or folder is required
     }
     
-    // If no file provided and no hooks, default is used.
-    // If file provided, check existence.
-    const filePath = config.file || "./sencillo.json";
-
-    if (!config.loadHook && !existsSync(filePath)) {
-      writeFileSync(filePath, "{}");
+    if (config.folder) {
+        this.#folder = config.folder;
+        if (!existsSync(this.#folder)) {
+            mkdirSync(this.#folder, { recursive: true });
+        }
+        this.#file = undefined;
+        this.#aofFile = join(this.#folder, "log.aof");
+    } else {
+        const filePath = config.file || "./sencillo.json";
+        if (!config.loadHook && !existsSync(filePath)) {
+            if (config.compression) {
+                writeFileSync(filePath, zlib.gzipSync("{}"));
+            } else {
+                writeFileSync(filePath, "{}");
+            }
+        }
+        this.#file = filePath;
+        this.#aofFile = `${filePath}.aof`;
     }
 
-    this.#file = filePath;
-    this.#aofFile = `${filePath}.aof`;
     this.#loadHook = config.loadHook;
     this.#saveHook = config.saveHook;
     this.#aof = config.aof || false;
+    this.#compression = config.compression || false;
+    this.#sharding = config.sharding || false;
+    this.#maxCacheSize = config.maxCacheSize || 0; // 0 means no limit
+    
+    if (this.#sharding && !this.#folder) {
+        throw new Error("Sharding requires folder mode to be enabled.");
+    }
   }
 
   async #loadDB() {
-    const jsonString = this.#loadHook
-      ? await this.#loadHook()
-      : await readFile(this.#file, "utf-8");
+    // Only used for single-file mode
+    if (this.#folder) return; 
+
+    let data;
+    if (this.#loadHook) {
+        data = JSON.parse(await this.#loadHook());
+    } else {
+        if (this.#compression) {
+            const stream = createReadStream(this.#file!).pipe(zlib.createGunzip());
+            data = await bfj.parse(stream);
+        } else {
+            data = await bfj.read(this.#file!);
+        }
+    }
 
     try {
-      this.#db = JSON.parse(jsonString);
+      this.#db = data as Database;
       
       // Replay AOF if enabled and exists
       if (this.#aof && existsSync(this.#aofFile)) {
@@ -111,17 +151,8 @@ export class SencilloDB {
           for (const line of lines) {
               try {
                   const { op, instructions } = JSON.parse(line);
-                  // We need to execute the operation without triggering new AOF writes or saves
-                  // But our methods push to pendingOperations.
-                  // We can temporarily disable AOF tracking or just clear pendingOperations after replay.
-                  // Since we are inside #loadDB which is called before any transaction, 
-                  // we can just call the methods and then clear pendingOperations.
-                  // Also, we need to make sure we don't double-apply if the snapshot already includes it.
-                  // AOF is usually used *instead* of frequent snapshots.
-                  // If we have a snapshot + AOF, we assume AOF contains operations *after* the snapshot.
-                  
                   // @ts-ignore
-                  this[op](instructions);
+                  await this[op](instructions);
               } catch (e) {
                   console.error("Failed to replay AOF line:", line, e);
               }
@@ -133,16 +164,246 @@ export class SencilloDB {
     }
   }
 
+  async #getCollection(name: string) {
+      if (!this.#db) this.#db = {};
+      
+      // LRU Touch
+      await this.#touch(name);
+
+      if (this.#db[name]) return this.#db[name];
+
+      if (this.#folder) {
+          if (this.#sharding) {
+              const colDir = join(this.#folder, name);
+              if (existsSync(colDir)) {
+                  const metaFile = join(colDir, "meta.json");
+                  if (existsSync(metaFile)) {
+                       this.#db[name] = (await bfj.read(metaFile)) as Collection;
+                  }
+              }
+          } else {
+              const fileName = this.#compression ? `${name}.json.gz` : `${name}.json`;
+              const file = join(this.#folder, fileName);
+              if (existsSync(file)) {
+                  if (this.#compression) {
+                      const stream = createReadStream(file).pipe(zlib.createGunzip());
+                      this.#db[name] = (await bfj.parse(stream)) as Collection;
+                  } else {
+                      this.#db[name] = (await bfj.read(file)) as Collection;
+                  }
+              }
+          }
+      }
+      
+      return this.#db[name];
+  }
+
+  async #getShard(collection: string, index: string) {
+      if (!this.#sharding || !this.#folder) return;
+      if (!this.#db || !this.#db[collection]) return;
+      
+      // If already loaded, return
+      if (this.#db[collection][index]) {
+          await this.#touch(`${collection}::${index}`);
+          return;
+      }
+
+      const colDir = join(this.#folder, collection);
+      const shardFile = this.#compression 
+        ? join(colDir, `shard_${index}.json.gz`)
+        : join(colDir, `shard_${index}.json`);
+
+      if (existsSync(shardFile)) {
+           if (this.#compression) {
+               const stream = createReadStream(shardFile).pipe(zlib.createGunzip());
+               this.#db[collection][index] = await bfj.parse(stream);
+           } else {
+               this.#db[collection][index] = await bfj.read(shardFile);
+           }
+           await this.#touch(`${collection}::${index}`);
+      }
+  }
+
+  async #touch(key: string) {
+      if (this.#maxCacheSize <= 0) return;
+
+      // Remove and re-add to mark as most recently used
+      if (this.#lru.has(key)) {
+          this.#lru.delete(key);
+      }
+      this.#lru.set(key, Date.now());
+
+      // Evict if too big
+      if (this.#lru.size > this.#maxCacheSize) {
+          await this.#evict();
+      }
+  }
+
+  async #evict() {
+      if (this.#lru.size === 0) return;
+
+      // Get least recently used (first item in Map)
+      const key = this.#lru.keys().next().value;
+      if (!key) return;
+
+      this.#lru.delete(key);
+
+      // Check if it's a shard or collection
+      if (key.includes("::")) {
+          const [collection, index] = key.split("::");
+          // Check if dirty
+          // We don't have per-shard dirty tracking easily, but we can check if the collection is dirty.
+          // Ideally we should save just this shard if it's dirty.
+          // For now, if the collection is marked dirty, we save the whole collection (or just the shard if we can).
+          
+          // Optimization: We can just save this specific shard if we implement a specific saveShard method.
+          // But #saveCollection handles saving all dirty shards.
+          // Let's implement a targeted save for eviction.
+          
+          if (this.#dirtyCollections.has(collection)) {
+              // We have to assume it might be dirty. 
+              // To be safe, we should save it.
+              await this.#saveShard(collection, index);
+          }
+          
+          // Unload
+          if (this.#db && this.#db[collection] && this.#db[collection][index]) {
+              delete this.#db[collection][index];
+          }
+
+      } else {
+          const collection = key;
+          if (this.#dirtyCollections.has(collection)) {
+              await this.#saveCollection(collection);
+          }
+          // Unload
+          if (this.#db && this.#db[collection]) {
+              delete this.#db[collection];
+          }
+      }
+  }
+
+  async #saveShard(collection: string, index: string) {
+      if (!this.#folder || !this.#sharding) return;
+      if (!this.#db || !this.#db[collection] || !this.#db[collection][index]) return;
+
+      const colDir = join(this.#folder, collection);
+      if (!existsSync(colDir)) mkdirSync(colDir, { recursive: true });
+
+      const shardData = this.#db[collection][index];
+      const shardFile = this.#compression
+        ? join(colDir, `shard_${index}.json.gz`)
+        : join(colDir, `shard_${index}.json`);
+      const tempFile = `${shardFile}.tmp`;
+
+      if (this.#compression) {
+          const stream = bfj.streamify(shardData);
+          const writeStream = createWriteStream(tempFile);
+          const gzip = zlib.createGzip();
+          stream.pipe(gzip).pipe(writeStream);
+          await new Promise<void>((resolve, reject) => {
+              writeStream.on("finish", () => resolve());
+              writeStream.on("error", reject);
+          });
+      } else {
+          await bfj.write(tempFile, shardData);
+      }
+      await rename(tempFile, shardFile);
+  }
+
+  async #saveCollection(name: string) {
+      if (this.#folder && this.#db && this.#db[name]) {
+          if (this.#sharding) {
+              const colDir = join(this.#folder, name);
+              if (!existsSync(colDir)) mkdirSync(colDir, { recursive: true });
+
+              // Save Meta
+              // Create a meta object with only stats, id_map, secondary_indexes
+              const meta: any = {
+                  __stats: this.#db[name].__stats,
+                  __id_map: this.#db[name].__id_map,
+                  __secondary_indexes: this.#db[name].__secondary_indexes
+              };
+              
+              const metaFile = join(colDir, "meta.json");
+              await bfj.write(metaFile, meta);
+
+              // Save Shards
+              // Iterate keys that are NOT meta keys
+              for (const key in this.#db[name]) {
+                  if (key === "__stats" || key === "__id_map" || key === "__secondary_indexes") continue;
+                  
+                  // It's a shard (index bucket)
+                  const shardData = this.#db[name][key];
+                  const shardFile = this.#compression
+                    ? join(colDir, `shard_${key}.json.gz`)
+                    : join(colDir, `shard_${key}.json`);
+                  const tempFile = `${shardFile}.tmp`;
+
+                  if (this.#compression) {
+                      const stream = bfj.streamify(shardData);
+                      const writeStream = createWriteStream(tempFile);
+                      const gzip = zlib.createGzip();
+                      stream.pipe(gzip).pipe(writeStream);
+                      await new Promise<void>((resolve, reject) => {
+                          writeStream.on("finish", () => resolve());
+                          writeStream.on("error", reject);
+                      });
+                  } else {
+                      await bfj.write(tempFile, shardData);
+                  }
+                  await rename(tempFile, shardFile);
+              }
+
+          } else {
+              const fileName = this.#compression ? `${name}.json.gz` : `${name}.json`;
+              const file = join(this.#folder, fileName);
+              const tempFile = `${file}.tmp`;
+              
+              if (this.#compression) {
+                  const stream = bfj.streamify(this.#db[name]);
+                  const writeStream = createWriteStream(tempFile);
+                  const gzip = zlib.createGzip();
+                  stream.pipe(gzip).pipe(writeStream);
+                  await new Promise<void>((resolve, reject) => {
+                      writeStream.on("finish", () => resolve());
+                      writeStream.on("error", reject);
+                  });
+              } else {
+                  await bfj.write(tempFile, this.#db[name]);
+              }
+              await rename(tempFile, file);
+          }
+      }
+  }
+
   async #saveDB() {
     if (!this.#db) return;
-    const jsonString = JSON.stringify(this.#db);
-    
-    if (this.#saveHook) {
-        await this.#saveHook(jsonString);
+
+    if (this.#folder) {
+        for (const collection of this.#dirtyCollections) {
+            await this.#saveCollection(collection);
+        }
+        this.#dirtyCollections.clear();
     } else {
-        const tempFile = `${this.#file}.tmp`;
-        await writeFile(tempFile, jsonString);
-        await rename(tempFile, this.#file);
+        if (this.#saveHook) {
+            await this.#saveHook(JSON.stringify(this.#db));
+        } else {
+            const tempFile = `${this.#file!}.tmp`;
+            if (this.#compression) {
+                const stream = bfj.streamify(this.#db);
+                const writeStream = createWriteStream(tempFile);
+                const gzip = zlib.createGzip();
+                stream.pipe(gzip).pipe(writeStream);
+                await new Promise<void>((resolve, reject) => {
+                    writeStream.on("finish", () => resolve());
+                    writeStream.on("error", reject);
+                });
+            } else {
+                await bfj.write(tempFile, this.#db);
+            }
+            await rename(tempFile, this.#file!);
+        }
     }
   }
 
@@ -154,7 +415,17 @@ export class SencilloDB {
 
   async compact() {
       return this.#mutex.runExclusive(async () => {
-          if (!this.#db) await this.#loadDB();
+          if (!this.#db) {
+              if (this.#folder) {
+                  this.#db = {};
+                  // Load all collections in folder? Or just rely on lazy load?
+                  // For compact, we probably want to ensure everything is saved.
+                  // But if we haven't loaded it, it hasn't changed.
+                  // So we only need to save loaded dirty collections.
+              } else {
+                  await this.#loadDB();
+              }
+          }
           await this.#saveDB();
           if (this.#aof && existsSync(this.#aofFile)) {
               await unlink(this.#aofFile);
@@ -162,22 +433,23 @@ export class SencilloDB {
       });
   }
 
-  async transaction(callback: (tx: Transaction) => any) {
+  async transaction(callback: (tx: Transaction) => Promise<any>) {
     return this.#mutex.runExclusive(async () => {
         const self = this;
 
         if (!this.#db) {
-        await this.#loadDB();
+            if (!this.#folder) await this.#loadDB();
+            else this.#db = {};
         }
         
         this.#pendingOperations = []; // Reset pending ops
 
         const wrap = (method: string, fn: Function) => {
-            return (instructions: any) => {
+            return async (instructions: any) => {
                 if (this.#aof) {
                     this.#pendingOperations.push({ op: method, instructions });
                 }
-                return fn(instructions);
+                return await fn(instructions);
             };
         };
 
@@ -207,13 +479,20 @@ export class SencilloDB {
         return payload;
         } catch (error) {
         console.log(error);
-        await this.#loadDB(); // Reload to revert state
+        if (!this.#folder) await this.#loadDB(); // Reload to revert state (only for single file)
+        
+        if (this.#folder && this.#db) {
+            for (const col of this.#dirtyCollections) {
+                delete this.#db[col];
+            }
+            this.#dirtyCollections.clear();
+        }
         throw error; // Re-throw so caller knows it failed
         }
     });
   }
 
-  #populate(item: any, rules: Populate[]) {
+  async #populate(item: any, rules: Populate[]) {
     if (!item) return item;
     const populatedItem = { ...item };
     
@@ -221,193 +500,226 @@ export class SencilloDB {
         const { field, collection, targetField = "_id" } = rule;
         const value = populatedItem[field];
         
-        if (value && this.#db && this.#db[collection]) {
-             // Find the related document
-             // We can use find logic here, but since it's by ID (usually), we can optimize or just scan default index
-             // Assuming default index for now or scanning all if not found in default
-             // A simple scan of default index is safest if we don't know where it is
-             // But wait, if we have an ID, we don't know which index it is in unless we scan all or use a lookup
-             // SencilloDB structure: collection -> index -> array of items
-             
-             let relatedDoc = null;
-             const coll = this.#db[collection];
-             const keys = Object.keys(coll);
-             
-             for (const key of keys) {
-                 if (key === "__stats" || key === "__secondary_indexes") continue; // Skip internal keys
-                 if (Array.isArray(coll[key])) {
-                     const found = (coll[key] as any[]).find(i => i[targetField] === value);
-                     if (found) {
-                         relatedDoc = found;
-                         break;
+        if (value) {
+             await this.#getCollection(collection);
+             if (this.#db && this.#db[collection]) {
+                 // Find the related document
+                 let relatedDoc = null;
+                 
+                 // Optimization: If targetField is _id and value is number, use ID Map
+                 if (targetField === "_id" && typeof value === "number") {
+                     if (this.#db[collection].__id_map && this.#db[collection].__id_map[value]) {
+                         const idx = this.#db[collection].__id_map[value];
+                         if (this.#sharding) await this.#getShard(collection, idx);
+                         
+                         if (this.#db[collection][idx]) {
+                            relatedDoc = (this.#db[collection][idx] as any[]).find((d: any) => d._id === value);
+                         }
+                     }
+                 } else {
+                     // Scan
+                     // In sharding mode, we might need to load ALL shards if we can't use ID map?
+                     // For now, let's assume populate works best with _id or secondary indexes.
+                     // If we have to scan, we should load all shards.
+                     if (this.#sharding) {
+                         const colDir = join(this.#folder!, collection);
+                         if (existsSync(colDir)) {
+                             const files = await readdir(colDir);
+                             for (const f of files) {
+                                 if (f.startsWith("shard_")) {
+                                     // shard_INDEX.json(.gz)
+                                     let idx = f.replace("shard_", "").replace(".json", "");
+                                     if (this.#compression) idx = idx.replace(".gz", "");
+                                     await this.#getShard(collection, idx);
+                                 }
+                             }
+                         }
+                     }
+
+                     const coll = this.#db[collection];
+                     const keys = Object.keys(coll);
+                     for (const key of keys) {
+                         if (key === "__stats" || key === "__secondary_indexes" || key === "__id_map") continue;
+                         if (Array.isArray(coll[key])) {
+                             const found = (coll[key] as any[]).find(i => i[targetField] === value);
+                             if (found) {
+                                 relatedDoc = found;
+                                 break;
+                             }
+                         }
                      }
                  }
-             }
 
-             if (relatedDoc) {
-                 populatedItem[field] = relatedDoc;
-             }
+                 if (relatedDoc) {
+                     populatedItem[field] = relatedDoc;
+                 }
+            }
         }
     }
     return populatedItem;
   }
 
-  create(instructions: Instructions) {
+  async create(instructions: Instructions) {
     let {
       collection = "default",
       index = "default",
       data = false,
     } = instructions;
+    
     if (!data) {
       throw new ValidationError("CREATE ERROR: no data given");
     }
 
     if (!this.#db) throw new DatabaseNotLoadedError();
+    
+    await this.#getCollection(collection);
+    if (this.#folder) this.#dirtyCollections.add(collection);
 
     if (!this.#db[collection]) {
       this.#db[collection] = { __stats: { inserted: 0, total: 0 }, __id_map: {} };
     }
 
-    if (index instanceof Function) {
-      index = index(data);
+    // Resolve index to string
+    let idx = "default";
+    if (typeof index === "function") {
+        idx = index(data);
+    } else if (typeof index === "string") {
+        idx = index;
     }
+    // If index is object, we default to "default" for create, or could throw error. 
+    // Assuming "default" fallback is safe or user error.
+    const _id = this.#db[collection].__stats.inserted + 1;
+    this.#db[collection].__stats.inserted++;
+    this.#db[collection].__stats.total++;
 
-    // Ensure index is a string at this point
-    const indexKey = index as string;
-
-    if (!this.#db[collection][indexKey]) {
-      this.#db[collection][indexKey] = [];
+    if (this.#sharding) {
+        await this.#getShard(collection, idx);
     }
-
-    if (typeof data != "object") {
-      throw new ValidationError("CREATE ERROR: data is not an object");
+    if (!this.#db[collection][idx]) {
+        this.#db[collection][idx] = [];
+        if (this.#sharding) await this.#touch(`${collection}::${idx}`);
     }
-
-    const _id = ++this.#db[collection].__stats.inserted;
-
-    this.#db[collection].__stats.total += 1;
 
     const newItem = { ...data, _id };
-
-    (this.#db[collection][indexKey] as any[]).push(newItem);
+    (this.#db[collection][idx] as any[]).push(newItem);
     
-    // Update ID Map
+    // Maintain secondary indexes
+    if (this.#db[collection].__secondary_indexes) {
+        for (const field in this.#db[collection].__secondary_indexes) {
+            const value = newItem[field];
+            if (value !== undefined) {
+                const strValue = String(value);
+                if (!this.#db[collection].__secondary_indexes[field][strValue]) {
+                    this.#db[collection].__secondary_indexes[field][strValue] = [];
+                }
+                this.#db[collection].__secondary_indexes[field][strValue].push(_id);
+            }
+        }
+    }
+
+    // Maintain ID Map
     if (!this.#db[collection].__id_map) this.#db[collection].__id_map = {};
-    this.#db[collection].__id_map![_id] = indexKey;
-
-    // Update Secondary Indexes
-    if (this.#db[collection].__secondary_indexes) {
-        for (const field in this.#db[collection].__secondary_indexes) {
-            if (newItem[field] !== undefined) {
-                const value = String(newItem[field]);
-                if (!this.#db[collection].__secondary_indexes![field][value]) {
-                    this.#db[collection].__secondary_indexes![field][value] = [];
-                }
-                this.#db[collection].__secondary_indexes![field][value].push(_id);
-            }
-        }
-    }
+    this.#db[collection].__id_map[_id] = idx;
 
     return newItem;
   }
 
-  update(instructions: Instructions) {
-    let {
-      _id = undefined,
-      collection = "default",
-      index = "default",
-      data = false,
-    } = instructions;
-
-    let new_index: string | ((data: any) => string) | undefined = undefined;
-    if (!_id) {
-      throw new ValidationError("UPDATE ERROR: no _id to update");
-    }
-
-    if (!data) {
-      throw new ValidationError("UPDATE ERROR: no data given");
-    }
-
+  async update(instructions: Instructions) {
+    const { collection = "default", data, _id, index } = instructions;
     if (!this.#db) throw new DatabaseNotLoadedError();
+    
+    if (_id === undefined) throw new ValidationError("UPDATE ERROR: no _id given");
 
-    if (!this.#db[collection]) {
-      throw new CollectionNotFoundError(collection);
-    }
+    await this.#getCollection(collection);
+    if (this.#folder) this.#dirtyCollections.add(collection);
 
-    if (typeof data != "object") {
-      throw new ValidationError("UPDATE ERROR: data is not an object");
-    }
+    if (!this.#db[collection]) throw new CollectionNotFoundError(collection);
 
-    if (typeof index === "object" && "current" in index && "new" in index) {
-        new_index = index.new;
-        index = index.current;
-    }
-
-    const indexKey = index as string;
-
-    if (!this.#db[collection][indexKey]) {
-      throw new IndexNotFoundError(indexKey);
-    }
-
-    const list = this.#db[collection][indexKey] as any[];
-    const itemIndex = list.findIndex(
-      (item) => item._id === _id
-    );
-
-    if (itemIndex == -1) {
-      throw new DocumentNotFoundError(_id);
-    }
-
-    const oldItem = list[itemIndex];
-
-    const newItem = {
-      ...data,
-      _id,
-    };
-
-    if (new_index) {
-      list.splice(itemIndex, 1);
-      let targetIndex = new_index;
-
-      if (typeof targetIndex === "function") {
-        targetIndex = targetIndex(newItem);
-      }
-      
-      const targetIndexKey = targetIndex as string;
-
-      if (!this.#db[collection][targetIndexKey]) {
-        this.#db[collection][targetIndexKey] = [];
-      }
-      
-      (this.#db[collection][targetIndexKey] as any[]).push(newItem);
-      
-      // Update ID Map
-      if (!this.#db[collection].__id_map) this.#db[collection].__id_map = {};
-      this.#db[collection].__id_map![_id] = targetIndexKey;
+    let idx = "default";
+    
+    // Use ID Map for O(1) lookup
+    if (this.#db[collection].__id_map && this.#db[collection].__id_map[_id]) {
+        idx = this.#db[collection].__id_map[_id];
     } else {
-        list[itemIndex] = newItem;
+        // Fallback to search
+        const indexes = Object.keys(this.#db[collection]).filter(
+            (i) => i !== "__stats" && i !== "__secondary_indexes" && i !== "__id_map"
+        );
+        let found = false;
+        for (const i of indexes) {
+            if ((this.#db[collection][i] as any[]).find((item: any) => item._id === _id)) {
+                idx = i;
+                found = true;
+                break;
+            }
+        }
+        if (!found) throw new DocumentNotFoundError(_id);
+    }
+
+    const itemIndex = (this.#db[collection][idx] as any[]).findIndex(
+      (item: any) => item._id === _id
+    );
+
+    if (itemIndex === -1) throw new DocumentNotFoundError(_id);
+
+    const oldItem = (this.#db[collection][idx] as any[])[itemIndex];
+    const newItem = { ...data, _id };
+
+    // Handle Index Change
+    if (index) {
+        let newIdx = idx;
+        if (typeof index === "object" && index.new) {
+             newIdx = typeof index.new === "function" ? index.new(newItem) : index.new;
+        } else if (typeof index === "string") {
+             newIdx = index;
+        } else if (typeof index === "function") {
+             newIdx = index(newItem);
+        }
+        
+        if (newIdx !== idx) {
+            // Remove from old
+            (this.#db[collection][idx] as any[]).splice(itemIndex, 1);
+            // Add to new
+            if (this.#sharding) await this.#getShard(collection, newIdx);
+            if (!this.#db[collection][newIdx]) {
+                this.#db[collection][newIdx] = [];
+                if (this.#sharding) await this.#touch(`${collection}::${newIdx}`);
+            }
+            (this.#db[collection][newIdx] as any[]).push(newItem);
+            // Update ID Map
+            if (this.#db[collection].__id_map) this.#db[collection].__id_map[_id] = newIdx;
+            idx = newIdx; // Update reference for secondary index update
+        } else {
+             (this.#db[collection][idx] as any[])[itemIndex] = newItem;
+        }
+    } else {
+        (this.#db[collection][idx] as any[])[itemIndex] = newItem;
     }
 
     // Update Secondary Indexes
     if (this.#db[collection].__secondary_indexes) {
         for (const field in this.#db[collection].__secondary_indexes) {
-            // Remove old value
-            if (oldItem[field] !== undefined) {
-                const oldValue = String(oldItem[field]);
-                const bucket = this.#db[collection].__secondary_indexes![field][oldValue];
-                if (bucket) {
-                    const idIndex = bucket.indexOf(_id);
-                    if (idIndex > -1) bucket.splice(idIndex, 1);
-                    if (bucket.length === 0) delete this.#db[collection].__secondary_indexes![field][oldValue];
+            const oldValue = oldItem[field];
+            const newValue = newItem[field];
+            
+            if (oldValue !== newValue) {
+                // Remove old
+                if (oldValue !== undefined) {
+                    const strOld = String(oldValue);
+                    const arr = this.#db[collection].__secondary_indexes[field][strOld];
+                    if (arr) {
+                        const i = arr.indexOf(_id);
+                        if (i !== -1) arr.splice(i, 1);
+                    }
                 }
-            }
-            // Add new value
-            if (newItem[field] !== undefined) {
-                const newValue = String(newItem[field]);
-                if (!this.#db[collection].__secondary_indexes![field][newValue]) {
-                    this.#db[collection].__secondary_indexes![field][newValue] = [];
+                // Add new
+                if (newValue !== undefined) {
+                    const strNew = String(newValue);
+                    if (!this.#db[collection].__secondary_indexes[field][strNew]) {
+                         this.#db[collection].__secondary_indexes[field][strNew] = [];
+                    }
+                    this.#db[collection].__secondary_indexes[field][strNew].push(_id);
                 }
-                this.#db[collection].__secondary_indexes![field][newValue].push(_id);
             }
         }
     }
@@ -415,334 +727,369 @@ export class SencilloDB {
     return newItem;
   }
 
-  destroy(instructions: Instructions) {
-    const {
-      _id = undefined,
-      collection = "default",
-      index = "default",
-    } = instructions;
-
-    if (!_id) {
-      throw new ValidationError("DESTROY ERROR: no _id to update");
-    }
-
+  async destroy(instructions: Instructions) {
+    const { collection = "default", _id } = instructions;
     if (!this.#db) throw new DatabaseNotLoadedError();
+    
+    if (_id === undefined) throw new ValidationError("DESTROY ERROR: no _id given");
 
-    if (!this.#db[collection]) {
-      throw new CollectionNotFoundError(collection);
+    await this.#getCollection(collection);
+    if (this.#folder) this.#dirtyCollections.add(collection);
+
+    if (!this.#db[collection]) throw new CollectionNotFoundError(collection);
+
+    let idx = "default";
+    
+    // Use ID Map for O(1) lookup
+    if (this.#db[collection].__id_map && this.#db[collection].__id_map[_id]) {
+        idx = this.#db[collection].__id_map[_id];
+    } else {
+        // Fallback to search
+        const indexes = Object.keys(this.#db[collection]).filter(
+            (i) => i !== "__stats" && i !== "__secondary_indexes" && i !== "__id_map"
+        );
+        let found = false;
+        for (const i of indexes) {
+            if ((this.#db[collection][i] as any[]).find((item: any) => item._id === _id)) {
+                idx = i;
+                found = true;
+                break;
+            }
+        }
+        if (!found) throw new DocumentNotFoundError(_id);
     }
 
-    const indexKey = index as string;
-
-    if (!this.#db[collection][indexKey]) {
-      throw new IndexNotFoundError(indexKey);
-    }
-
-    const list = this.#db[collection][indexKey] as any[];
-    const itemIndex = list.findIndex(
-      (item) => item._id === _id
+    const itemIndex = (this.#db[collection][idx] as any[]).findIndex(
+      (item: any) => item._id === _id
     );
 
-    if (itemIndex === -1) return undefined;
+    if (itemIndex === -1) throw new DocumentNotFoundError(_id);
 
-    const destroyedItem = list.splice(itemIndex, 1)[0];
-    this.#db[collection].__stats.total -= 1;
-
-    // Update ID Map
+    const deletedItem = (this.#db[collection][idx] as any[]).splice(itemIndex, 1)[0];
+    this.#db[collection].__stats.total--;
+    
+    // Remove from ID Map
     if (this.#db[collection].__id_map) {
-        delete this.#db[collection].__id_map![_id];
+        delete this.#db[collection].__id_map[_id];
     }
 
-    // Update Secondary Indexes
+    // Remove from Secondary Indexes
     if (this.#db[collection].__secondary_indexes) {
         for (const field in this.#db[collection].__secondary_indexes) {
-            if (destroyedItem[field] !== undefined) {
-                const value = String(destroyedItem[field]);
-                const bucket = this.#db[collection].__secondary_indexes![field][value];
-                if (bucket) {
-                    const idIndex = bucket.indexOf(_id);
-                    if (idIndex > -1) bucket.splice(idIndex, 1);
-                    if (bucket.length === 0) delete this.#db[collection].__secondary_indexes![field][value];
+            const value = deletedItem[field];
+            if (value !== undefined) {
+                const strValue = String(value);
+                const arr = this.#db[collection].__secondary_indexes[field][strValue];
+                if (arr) {
+                    const i = arr.indexOf(_id);
+                    if (i !== -1) arr.splice(i, 1);
                 }
             }
         }
     }
 
-    return destroyedItem;
+    return deletedItem;
   }
 
-  find(instructions: Instructions) {
-    const {
-      callback = undefined,
-      filter = undefined,
-      collection = "default",
-      index = undefined,
-    } = instructions;
-
-    let matcher = callback;
-
-    if (!matcher) {
-        if (filter) {
-            matcher = (item: any) => match(item, filter);
-        } else {
-            throw new ValidationError("FIND ERROR: no callback or filter property");
-        }
-    }
-
+  async find(instructions: Instructions) {
+    const { collection = "default", callback, index, filter, populate } = instructions;
     if (!this.#db) throw new DatabaseNotLoadedError();
+    
+    await this.#getCollection(collection);
 
-    if (!this.#db[collection]) {
-      throw new CollectionNotFoundError(collection);
-    }
+    if (!this.#db[collection]) throw new CollectionNotFoundError(collection);
 
-    // Optimization: Check Secondary Indexes
-    if (filter && this.#db[collection].__secondary_indexes && this.#db[collection].__id_map) {
+    // Optimized Secondary Index Lookup
+    if (filter && this.#db[collection].__secondary_indexes) {
         for (const field in filter) {
-            // Check for direct equality or $eq
-            let value = undefined;
-            if (typeof filter[field] !== 'object') {
-                value = filter[field];
-            } else if (filter[field].$eq !== undefined) {
-                value = filter[field].$eq;
-            }
-
-            if (value !== undefined && this.#db[collection].__secondary_indexes![field]) {
-                const stringValue = String(value);
-                const ids = this.#db[collection].__secondary_indexes![field][stringValue];
+            const value = filter[field];
+            // Check if filter is a direct value or $eq
+            const isDirect = typeof value !== "object" || value === null;
+            const isEq = value && typeof value === "object" && "$eq" in value;
+            
+            if (isDirect || isEq) {
+                const targetValue = isDirect ? value : value.$eq;
+                const strValue = String(targetValue);
                 
-                if (ids && ids.length > 0) {
-                    // Use ID Map to find items quickly
-                    for (const id of ids) {
-                        const idx = this.#db[collection].__id_map![id];
-                        if (idx && this.#db[collection][idx]) {
-                            const item = (this.#db[collection][idx] as any[]).find(i => i._id === id);
-                            if (item && matcher(item)) { // Check against full matcher
-                                if (instructions.populate) {
-                                    return this.#populate(item, instructions.populate);
+                if (this.#db[collection].__secondary_indexes[field] && 
+                    this.#db[collection].__secondary_indexes[field][strValue]) {
+                    
+                    const ids: number[] = this.#db[collection].__secondary_indexes[field][strValue];
+                    if (ids.length > 0) {
+                        const id = ids[0];
+                        // Use ID Map to find it fast
+                        if (this.#db[collection].__id_map && this.#db[collection].__id_map[id]) {
+                            const idx = this.#db[collection].__id_map[id];
+                            if (this.#sharding) await this.#getShard(collection, idx);
+
+                            if (this.#db[collection][idx]) {
+                                const doc = (this.#db[collection][idx] as any[]).find((d: any) => d._id === id);
+                                if (doc) {
+                                    // Matcher check to be sure (in case of collision or other filters)
+                                    const matcher = match(filter || {}, callback);
+                                    if (matcher(doc, 0)) {
+                                         if (populate) return await this.#populate(doc, populate);
+                                         return doc;
+                                    }
                                 }
-                                return item;
                             }
                         }
                     }
-                    return undefined; // Found in index but not matching filter (shouldn't happen for equality, but maybe matcher has other checks)
-                } else {
-                    return undefined; // Index exists but empty for this value, so no match
                 }
             }
         }
     }
 
-    if (index) {
-      const indexKey = index as string;
-      if (!this.#db[collection][indexKey]) {
-        throw new IndexNotFoundError(indexKey);
-      }
+    const matcher = match(filter || {}, callback);
 
-      const result = (this.#db[collection][indexKey] as any[]).find(matcher);
-      if (instructions.populate && result) {
-          return this.#populate(result, instructions.populate);
-      }
-      return result;
+    if (index && typeof index === "string") {
+      if (this.#sharding) await this.#getShard(collection, index);
+      if (!this.#db[collection][index]) throw new IndexNotFoundError(index);
+      const found = (this.#db[collection][index] as any[]).find(matcher);
+      if (found && populate) return await this.#populate(found, populate);
+      return found;
     }
 
-    const keys = Object.keys(this.#db[collection]);
-    const coll = this.#db[collection];
+    // Scan all
+    if (this.#sharding) {
+         const colDir = join(this.#folder!, collection);
+         if (existsSync(colDir)) {
+             const files = await readdir(colDir);
+             for (const f of files) {
+                 if (f.startsWith("shard_")) {
+                     let i = f.replace("shard_", "").replace(".json", "");
+                     if (this.#compression) i = i.replace(".gz", "");
+                     await this.#getShard(collection, i);
+                 }
+             }
+         }
+    }
 
-    let found = false;
-    let item;
+    const indexes = Object.keys(this.#db[collection]).filter(
+      (i) => i !== "__stats" && i !== "__secondary_indexes" && i !== "__id_map"
+    );
 
-    for (let key of keys) {
-      if (!found && Array.isArray(coll[key])) {
-        const findResult = (coll[key] as any[]).find(matcher);
-        if (findResult) {
-          item = findResult;
-          found = true;
-        }
+    for (const i of indexes) {
+      const found = (this.#db[collection][i] as any[]).find(matcher);
+      if (found) {
+          if (populate) return await this.#populate(found, populate);
+          return found;
       }
     }
-
-    if (instructions.populate && item) {
-        return this.#populate(item, instructions.populate);
-    }
-
-    return item;
   }
 
-  findMany(instructions: Instructions) {
-    const {
-      callback = undefined,
-      filter = undefined,
-      collection = "default",
-      index = undefined,
-      sort = (x: any, y: any) => x._id - y._id,
-    } = instructions;
-
-    let matcher = callback;
-
-    if (!matcher) {
-        if (filter) {
-            matcher = (item: any) => match(item, filter);
-        } else {
-            throw new ValidationError("FINDMANY ERROR: no callback or filter property");
-        }
-    }
-
+  async findMany(instructions: Instructions) {
+    const { collection = "default", callback, index, sort, filter, populate } = instructions;
     if (!this.#db) throw new DatabaseNotLoadedError();
+    
+    await this.#getCollection(collection);
 
-    if (!this.#db[collection]) {
-      throw new CollectionNotFoundError(collection);
-    }
+    if (!this.#db[collection]) throw new CollectionNotFoundError(collection);
 
-    // Optimization: Check Secondary Indexes
-    if (filter && this.#db[collection].__secondary_indexes && this.#db[collection].__id_map) {
-        for (const field in filter) {
-            // Check for direct equality or $eq
-            let value = undefined;
-            if (typeof filter[field] !== 'object') {
-                value = filter[field];
-            } else if (filter[field].$eq !== undefined) {
-                value = filter[field].$eq;
-            }
+    const matcher = match(filter || {}, callback);
+    let results: any[] = [];
 
-            if (value !== undefined && this.#db[collection].__secondary_indexes![field]) {
-                const stringValue = String(value);
-                const ids = this.#db[collection].__secondary_indexes![field][stringValue];
-                
-                if (ids && ids.length > 0) {
-                    const results: any[] = [];
-                    // Use ID Map to find items quickly
+    // Optimized Secondary Index Lookup
+    let usedIndex = false;
+    if (filter && this.#db[collection].__secondary_indexes) {
+         for (const field in filter) {
+            const value = filter[field];
+            const isDirect = typeof value !== "object" || value === null;
+            const isEq = value && typeof value === "object" && "$eq" in value;
+            
+            if (isDirect || isEq) {
+                const targetValue = isDirect ? value : value.$eq;
+                const strValue = String(targetValue);
+                if (this.#db[collection].__secondary_indexes[field] && 
+                    this.#db[collection].__secondary_indexes[field][strValue]) {
+                    
+                    const ids: number[] = this.#db[collection].__secondary_indexes[field][strValue];
+                    // Retrieve all docs
                     for (const id of ids) {
-                        const idx = this.#db[collection].__id_map![id];
-                        if (idx && this.#db[collection][idx]) {
-                            const item = (this.#db[collection][idx] as any[]).find(i => i._id === id);
-                            if (item && matcher(item)) { // Check against full matcher
-                                results.push(item);
+                        if (this.#db[collection].__id_map && this.#db[collection].__id_map[id]) {
+                            const idx = this.#db[collection].__id_map[id];
+                            if (this.#sharding) await this.#getShard(collection, idx);
+
+                            if (this.#db[collection][idx]) {
+                                const doc = (this.#db[collection][idx] as any[]).find((d: any) => d._id === id);
+                                if (doc && matcher(doc, 0)) {
+                                    results.push(doc);
+                                }
                             }
                         }
                     }
-                    if (sort) {
-                        results.sort(sort);
-                    }
-                    if (instructions.populate) {
-                        return results.map(item => this.#populate(item, instructions.populate!));
-                    }
-                    return results;
-                } else {
-                    return []; // Index exists but empty for this value, so no matches
+                    usedIndex = true;
+                    break; // Only use one index
                 }
             }
-        }
+         }
     }
 
-    if (index) {
-      const indexKey = index as string;
-      if (!this.#db[collection][indexKey]) {
-        throw new IndexNotFoundError(indexKey);
-      }
-
-      let results = (this.#db[collection][indexKey] as any[]).filter(matcher);
-      
-      if (sort) {
-          results.sort(sort);
-      }
-
-      if (instructions.populate) {
-          results = results.map(item => this.#populate(item, instructions.populate!));
-      }
-      
-      return results;
-    }
-
-    const keys = Object.keys(this.#db[collection]);
-    const coll = this.#db[collection];
-
-    let items: any[] = [];
-
-    for (let key of keys) {
-      if (key === "__stats" || key === "__secondary_indexes" || key === "__id_map") continue; // Skip internal keys
-      if (Array.isArray(coll[key])) {
-        const findResult = (coll[key] as any[]).filter(matcher);
-        if (findResult.length > 0) {
-          items = [...items, ...findResult];
+    if (!usedIndex) {
+        if (index && typeof index === "string") {
+        if (this.#sharding) await this.#getShard(collection, index);
+        if (!this.#db[collection][index]) throw new IndexNotFoundError(index);
+        results = (this.#db[collection][index] as any[]).filter(matcher);
+        } else {
+        
+        if (this.#sharding) {
+             const colDir = join(this.#folder!, collection);
+             if (existsSync(colDir)) {
+                 const files = await readdir(colDir);
+                 for (const f of files) {
+                     if (f.startsWith("shard_")) {
+                         let i = f.replace("shard_", "").replace(".json", "");
+                         if (this.#compression) i = i.replace(".gz", "");
+                         await this.#getShard(collection, i);
+                     }
+                 }
+             }
         }
-      }
+        const indexes = Object.keys(this.#db[collection]).filter(
+            (i) => i !== "__stats" && i !== "__secondary_indexes" && i !== "__id_map"
+        );
+
+        for (const i of indexes) {
+            results = [...results, ...(this.#db[collection][i] as any[]).filter(matcher)];
+        }
+        }
     }
 
     if (sort) {
-      items.sort(sort);
+      results.sort(sort);
+    } else {
+      results.sort((a, b) => a._id - b._id);
     }
 
-    if (instructions.populate) {
-        items = items.map(item => this.#populate(item, instructions.populate!));
+    if (populate) {
+        // Use Promise.all for parallel population or loop for sequential
+        // Sequential is safer for now
+        const populatedResults = [];
+        for (const doc of results) {
+            populatedResults.push(await this.#populate(doc, populate));
+        }
+        return populatedResults;
     }
 
-    return items;
+    return results;
   }
 
-  createMany(instructions: Instructions) {
-    const { data, index = "default", collection = "default" } = instructions;
+  async createMany(instructions: Instructions) {
+    const { collection = "default", data, index } = instructions;
+    if (!this.#db) throw new DatabaseNotLoadedError();
+    
+    await this.#getCollection(collection);
+    if (this.#folder) this.#dirtyCollections.add(collection);
 
-    if (!Array.isArray(data)) {
-      throw new ValidationError("CREATEMANY ERROR: data must be an array of objects");
+    const results = [];
+    for (const item of data) {
+      results.push(await this.create({ collection, data: item, index }));
     }
-
-    if (!data.every((item: any) => typeof item === "object")) {
-      throw new ValidationError("CREATEMANY ERROR: all items in array must be objects");
-    }
-
-    const items = [];
-
-    for (let item of data) {
-      if (typeof index === "function") {
-        const newItem = this.create({
-          data: item,
-          index: index(item),
-          collection,
-        });
-        items.push(newItem);
-      } else {
-        const newItem = this.create({
-          data: item,
-          index: index as string,
-          collection,
-        });
-        items.push(newItem);
-      }
-    }
-
-    return items;
+    return results;
   }
 
-  dropCollection(instructions: Instructions) {
-    const { collection } = instructions;
-    if (!collection || !this.#db) return;
-
+  async dropCollection(instructions: Instructions) {
+    const { collection = "default" } = instructions;
+    if (!this.#db) throw new DatabaseNotLoadedError();
+    
+    await this.#getCollection(collection);
+    
+    if (!this.#db[collection]) throw new CollectionNotFoundError(collection);
     delete this.#db[collection];
-  }
-
-  dropIndex(instructions: Instructions) {
-    const { collection, index } = instructions;
-    if (!collection || !index || !this.#db) return;
-
-    const indexKey = index as string;
-
-    if (this.#db[collection] && this.#db[collection][indexKey]) {
-      // Remove items from ID map that were in this index
-      if (this.#db[collection].__id_map) {
-          const itemsInIndex = this.#db[collection][indexKey] as any[];
-          if (Array.isArray(itemsInIndex)) {
-              for (const item of itemsInIndex) {
-                  delete this.#db[collection].__id_map![item._id];
-              }
-          }
-      }
-      delete this.#db[collection][indexKey];
+    
+    if (this.#folder) {
+        this.#dirtyCollections.delete(collection); 
+        if (this.#sharding) {
+             const colDir = join(this.#folder, collection);
+             if (existsSync(colDir)) {
+                 await import("fs/promises").then(fs => fs.rm(colDir, { recursive: true, force: true }));
+             }
+        } else {
+            const fileName = this.#compression ? `${collection}.json.gz` : `${collection}.json`;
+            const file = join(this.#folder, fileName);
+            if (existsSync(file)) {
+                await unlink(file);
+            }
+        }
     }
   }
 
-  ensureIndex(instructions: { collection: string; field: string }) {
+  async dropIndex(instructions: Instructions) {
+    const { collection = "default", index } = instructions;
+    if (!this.#db) throw new DatabaseNotLoadedError();
+    
+    await this.#getCollection(collection);
+    if (this.#folder) this.#dirtyCollections.add(collection);
+
+    if (!this.#db[collection]) throw new CollectionNotFoundError(collection);
+    
+    if (this.#sharding) await this.#getShard(collection, index as string);
+
+    if (!this.#db[collection][index as string])
+      throw new IndexNotFoundError(index as string);
+    
+    const items = this.#db[collection][index as string] as any[];
+    delete this.#db[collection][index as string];
+    this.#db[collection].__stats.total -= items.length;
+
+    // Clean up ID Map
+    if (this.#db[collection].__id_map) {
+        for (const item of items) {
+            delete this.#db[collection].__id_map[item._id];
+        }
+    }
+    
+    // Clean up Secondary Indexes
+    if (this.#db[collection].__secondary_indexes) {
+        for (const item of items) {
+            for (const field in this.#db[collection].__secondary_indexes) {
+                const value = item[field];
+                if (value !== undefined) {
+                    const strValue = String(value);
+                    const arr = this.#db[collection].__secondary_indexes[field][strValue];
+                    if (arr) {
+                        const i = arr.indexOf(item._id);
+                        if (i !== -1) arr.splice(i, 1);
+                    }
+                }
+            }
+        }
+    }
+  }
+
+  async rewriteCollection(instructions: Instructions) {
+    const { collection = "default", index, sort } = instructions;
+    if (!this.#db) throw new DatabaseNotLoadedError();
+    
+    await this.#getCollection(collection);
+    if (this.#folder) this.#dirtyCollections.add(collection);
+
+    if (!this.#db[collection]) throw new CollectionNotFoundError(collection);
+
+    const items = await this.findMany({
+      collection,
+      callback: () => true,
+      sort,
+    });
+
+    // clear collection
+    this.#db[collection] = { __stats: { inserted: 0, total: 0 }, __id_map: {} };
+
+    // rewrite all data
+    await this.createMany({
+      data: items,
+      index,
+      collection,
+    });
+  }
+
+  async ensureIndex(instructions: { collection: string; field: string }) {
     const { collection, field } = instructions;
     if (!this.#db) throw new DatabaseNotLoadedError();
+    
+    await this.#getCollection(collection);
+    if (this.#folder) this.#dirtyCollections.add(collection);
+
     if (!this.#db[collection]) {
         this.#db[collection] = { __stats: { inserted: 0, total: 0 }, __id_map: {} };
     }
@@ -751,72 +1098,21 @@ export class SencilloDB {
         this.#db[collection].__secondary_indexes = {};
     }
 
-    if (!this.#db[collection].__secondary_indexes![field]) {
-        this.#db[collection].__secondary_indexes![field] = {};
-    }
-
-    // Populate Index
-    const coll = this.#db[collection];
-    const keys = Object.keys(coll);
-    
-    for (const key of keys) {
-        if (key === "__stats" || key === "__secondary_indexes" || key === "__id_map") continue;
-        if (Array.isArray(coll[key])) {
-            for (const item of (coll[key] as any[])) {
-                if (item[field] !== undefined) {
-                    const value = String(item[field]);
-                    if (!this.#db[collection].__secondary_indexes![field][value]) {
-                        this.#db[collection].__secondary_indexes![field][value] = [];
-                    }
-                    this.#db[collection].__secondary_indexes![field][value].push(item._id);
+    if (!this.#db[collection].__secondary_indexes[field]) {
+        this.#db[collection].__secondary_indexes[field] = {};
+        // Populate existing data
+        const items = await this.findMany({ collection, callback: () => true });
+        for (const item of items) {
+            const value = item[field];
+            if (value !== undefined) {
+                const strValue = String(value);
+                if (!this.#db[collection].__secondary_indexes[field][strValue]) {
+                    this.#db[collection].__secondary_indexes[field][strValue] = [];
                 }
+                this.#db[collection].__secondary_indexes[field][strValue].push(item._id);
             }
         }
     }
-  }
-
-  rewriteCollection(instructions: Instructions) {
-    const {
-      collection = undefined,
-      index = "default",
-      sort = (x: any, y: any) => x._id - y._id,
-    } = instructions;
-
-    if (!collection) {
-      throw new ValidationError("rewriteCollection Error: No Collection Specified");
-    }
-
-    if (!this.#db) throw new DatabaseNotLoadedError();
-
-    if (!this.#db[collection]) {
-      throw new CollectionNotFoundError(collection);
-    }
-
-    const keys = Object.keys(this.#db[collection]);
-    const items: any[] = [];
-    
-    // Clear ID Map if exists
-    if (this.#db[collection].__id_map) this.#db[collection].__id_map = {};
-
-    for (let key of keys) {
-      if (key === "__stats" || key === "__secondary_indexes" || key === "__id_map") continue;
-      if (Array.isArray(this.#db[collection][key])) {
-        items.push(...(this.#db[collection][key] as any[]));
-      }
-    }
-
-    //sort the data
-    items.sort(sort);
-
-    // drop collection
-    delete this.#db[collection];
-
-    // rewrite all data
-    this.createMany({
-      data: items,
-      index,
-      collection,
-    });
   }
 }
 
