@@ -67,7 +67,7 @@ SencilloDB supports true secondary indexing for O(1) lookups:
 - **Optimization**: `find` and `findMany` queries automatically use secondary indexes if the filter contains an equality check on an indexed field.
 - **Maintenance**: Indexes are automatically updated on `create`, `update`, and `destroy` operations.
 
-- **Maintenance**: Indexes are automatically updated on `create`, `update`, and `destroy` operations.
+
 
 ### 10. Append-Only File (AOF) Persistence
 SencilloDB supports AOF persistence for high-throughput write scenarios:

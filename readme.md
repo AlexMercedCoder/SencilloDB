@@ -11,6 +11,7 @@ SencilloDB is a small passion project to create a small compact but flexible obj
 - [Getting Started](./documentation/getting-started.md)
 - [Core Concepts](./documentation/core-concepts.md)
 - [API Reference](./documentation/api-reference.md)
+- [Querying Data](./documentation/querying.md)
 - [Advanced Usage](./documentation/advanced-usage.md)
 
 For example this code:
