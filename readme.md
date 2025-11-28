@@ -4,7 +4,7 @@
 
 _Sencillo is spanish for Simple_
 
-SencilloDB is a small passion project to create a small compact but flexible object store using JSON files.
+SencilloDB is a small passion project to create a small compact but flexible object store using JSON files. Now written in TypeScript for better type safety!
 
 ## Documentation
 
@@ -88,8 +88,22 @@ Whatever this callback returns is what the transaction returns, so you can only 
 By defaults it saves the data in a file called sencillo.json but if you want to save it elsewhere just pass it a file location.
 
 ```js
-const db = new SencilloDB({ file: "./app.json" });
+const db = new SencilloDB({ 
+  file: "./data.json",
+  aof: true // Enable Append-Only File persistence for faster writes
+});
 ```
+
+## Features
+- **In-Memory Speed**: Operations are performed in memory.
+- **Persistence**: Data is saved to a JSON file.
+- **AOF Mode**: Optional append-only logging for high write throughput.
+- **ACID Transactions**: Serialized transactions with atomic file writes.
+- **Secondary Indexing**: O(1) lookups on indexed fields.
+- **Rich Queries**: MongoDB-like operators (`$gt`, `$in`, `$regex`, etc.).
+- **Relations**: Populate related documents.
+- **Flexible Indexing**: Organize data into buckets for efficient retrieval.
+
 All properties are optional:
 
 - file (`default: "./sencillo.json"`): file to save JSON data too

@@ -5,7 +5,7 @@ SencilloDB is a lightweight, JSON-based object store designed for simplicity and
 
 ## Core Components
 
-### 1. SencilloDB Class (`index.js`)
+### 1. SencilloDB Class (`src/index.ts`)
 The main class that manages the database instance.
 - **Constructor**: Initializes the DB with a file path or custom load/save hooks.
 - **State**: Maintains the database state in memory (`#db`).
@@ -36,6 +36,44 @@ A helper function that wraps `transaction` to perform single operations without 
 A factory function that creates a wrapper around `SencilloDB` to enforce schemas.
 - **Validation**: Checks if data matches the defined schema (property existence and type).
 - **Execution**: Delegates operations to `quickTx` after validation.
+
+### 5. Error Handling
+SencilloDB uses custom error classes for better debugging:
+- `SencilloDBError`: Base class for all errors.
+- `CollectionNotFoundError`: Thrown when accessing a non-existent collection.
+- `IndexNotFoundError`: Thrown when accessing a non-existent index.
+- `DocumentNotFoundError`: Thrown when an operation targets a non-existent document ID.
+- `ValidationError`: Thrown when input data fails validation (e.g., missing required fields, wrong type).
+- `DatabaseNotLoadedError`: Thrown if operations are attempted before the DB is loaded.
+
+### 6. Concurrency Control
+SencilloDB ensures data integrity in concurrent environments:
+- **Mutex**: A mutex lock serializes all transactions, ensuring that only one transaction modifies the in-memory state and writes to the file at a time.
+- **Atomic Writes**: Data is written to a temporary file first and then renamed to the target file. This prevents data corruption if the process crashes during a write operation.
+
+### 7. Query Engine
+SencilloDB supports structured queries with MongoDB-like operators:
+- **Comparison**: `$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte`
+- **Array**: `$in`, `$nin`
+- **Evaluation**: `$regex`
+
+### 8. Relations & Population
+SencilloDB supports basic relational data retrieval:
+- **Population**: `find` and `findMany` operations can automatically replace reference IDs with the actual related documents from other collections using the `populate` option.
+
+### 9. Secondary Indexing
+SencilloDB supports true secondary indexing for O(1) lookups:
+- **`ensureIndex`**: Creates a secondary index on a specific field.
+- **Optimization**: `find` and `findMany` queries automatically use secondary indexes if the filter contains an equality check on an indexed field.
+- **Maintenance**: Indexes are automatically updated on `create`, `update`, and `destroy` operations.
+
+- **Maintenance**: Indexes are automatically updated on `create`, `update`, and `destroy` operations.
+
+### 10. Append-Only File (AOF) Persistence
+SencilloDB supports AOF persistence for high-throughput write scenarios:
+- **Log-Based**: Writes are appended to an `.aof` file instead of rewriting the entire database.
+- **Replay**: On startup, the AOF log is replayed to restore the database state.
+- **Compaction**: The `compact()` method merges the AOF log into the main JSON file and clears the log.
 
 ## Data Structure
 The data is stored as a JSON object with the following hierarchy:
