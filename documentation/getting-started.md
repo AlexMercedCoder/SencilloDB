@@ -8,6 +8,8 @@ Install SencilloDB using npm:
 npm install sencillodb
 ```
 
+SencilloDB is written in TypeScript and includes type definitions out of the box.
+
 ## Basic Usage
 
 Import `SencilloDB` and create an instance. By default, it will save data to `sencillo.json` in the current directory.

@@ -42,6 +42,27 @@ await User.execute("create", {
 });
 ```
 
+## AOF Persistence
+
+Enable AOF for better write performance.
+
+```javascript
+const db = new SencilloDB({ 
+  file: "./data.json", 
+  aof: true 
+});
+
+// Writes are fast (appended to data.json.aof)
+await db.transaction(tx => {
+  tx.create({ collection: "logs", data: { msg: "Hello" } });
+});
+
+// Periodically compact the log
+setInterval(async () => {
+  await db.compact();
+}, 60000); // Every minute
+```
+
 ## Custom Storage Hooks
 
 You can override the default file system storage by providing `loadHook` and `saveHook` in the constructor. This is useful for saving data to S3, a remote database, or local storage in a browser.
